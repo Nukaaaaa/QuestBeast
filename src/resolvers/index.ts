@@ -52,6 +52,7 @@ export const resolvers = {
         period: 'week',
       }));
     },
+    
 
     monster: async (_: any, { userId }: any) => {
       const user = await User.findById(userId);
@@ -66,8 +67,21 @@ export const resolvers = {
         evolutionStage: points > 500 ? 'Adult' : 'Baby',
       };
     },
+    me: async (_: any, __: any, { userId }: any) => {
+      if (!userId) {
+      throw new GraphQLError('Not authenticated', {
+        extensions: { code: 'UNAUTHENTICATED' },
+      });
+    }
+      const userDoc = await User.findById(userId).populate('quests');
+      if (!userDoc) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+        return userDoc;
   },
-
+  },
   Mutation: {
     createUser: async (_: any, { name, email, password }: any) => {
       const trimmedName = name.trim();
@@ -89,7 +103,6 @@ export const resolvers = {
           extensions: { code: 'BAD_USER_INPUT' },
         });
       }
-
       const existing = await User.findOne({ email });
       if (existing) {
         throw new GraphQLError('Email already in use', {
@@ -343,4 +356,17 @@ export const resolvers = {
     subscribe: () => pubsub.asyncIterableIterator('NEW_SUBMISSION'),
   },
 },
+  User: {
+    monster: async (user: any) => {
+      const points = user.points ?? 0;
+      return {
+        id: user._id.toString(),
+        name: points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin',
+        level: Math.floor(points / 100) + 1,
+        hunger: Math.max(0, 100 - (points % 100)),
+        multiplier: 1 + points / 1000,
+        evolutionStage: points > 500 ? 'Adult' : 'Baby',
+      };
+    },
+  },
 };

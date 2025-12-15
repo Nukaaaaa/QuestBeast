@@ -9,6 +9,7 @@ export const typeDefs = `#graphql
     isActive: Boolean!
     quests: [Quest!]!
     createdAt: String!
+    monster: Monster!
   }
 
   type Quest {
@@ -59,6 +60,7 @@ export const typeDefs = `#graphql
     submissions(questId: ID!): [Submission!]!
     leaderboard: [LeaderboardEntry!]!
     monster(userId: ID!): Monster
+    me: User!
   }
 
   type Mutation {
