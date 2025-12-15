@@ -1,43 +1,47 @@
+import { GraphQLError } from 'graphql';
 import User from '../models/User';
 import Quest from '../models/Quest';
 import Submission from '../models/Submission';
 import { hashPassword, comparePassword, createToken } from '../utils/auth';
-import { PubSub } from 'graphql-subscriptions';
-
-const pubsub = { 
-  asyncIterator: (topics: string[]) => ({
-    next: () => Promise.resolve({}),
-    return: () => Promise.resolve({}),
-    throw: () => Promise.reject(new Error(''))
-  }) as any 
-} as any;
+import { pubsub } from '../pubsub'; 
 
 export const resolvers = {
   Query: {
-    // ✅ БАЗОВЫЕ
-    users: async () => await User.find().populate('quests'),
+    users: async () => {
+      return User.find().populate('quests');
+    },
+
     user: async (_: any, { id }: any) => {
       const userDoc = await User.findById(id).populate('quests');
-      if (!userDoc) throw new Error('User not found');
+      if (!userDoc) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
       return userDoc;
     },
-    
-    // ✅ КВЕСТЫ
-    quests: async (_: any, { subject }: any) => 
-      subject 
-        ? await Quest.find({ subject }).populate('creator submissions')
-        : await Quest.find().populate('creator submissions'),
+
+    quests: async (_: any, { subject }: any) => {
+      if (subject) {
+        return Quest.find({ subject }).populate('creator submissions');
+      }
+      return Quest.find().populate('creator submissions');
+    },
+
     quest: async (_: any, { id }: any) => {
       const questDoc = await Quest.findById(id).populate('creator submissions');
-      if (!questDoc) throw new Error('Quest not found');
+      if (!questDoc) {
+        throw new GraphQLError('Quest not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
       return questDoc;
     },
-    
-    // ✅ САБМИШИНЫ
-    submissions: async (_: any, { questId }: any) => 
-      await Submission.find({ questId }).populate('author quest'),
-    
-    // ✅ ЛИДЕРБОРД
+
+    submissions: async (_: any, { questId }: any) => {
+      return Submission.find({ quest: questId }).populate('author quest');
+    },
+
     leaderboard: async () => {
       const users = await User.find().sort({ points: -1 }).limit(10);
       return users.map((user, index) => ({
@@ -45,146 +49,298 @@ export const resolvers = {
         user,
         score: user.points,
         rank: index + 1,
-        period: 'weekly'
+        period: 'week',
       }));
     },
-    
-    // ✅ МОНСТР
+
     monster: async (_: any, { userId }: any) => {
       const user = await User.findById(userId);
-      const points = user?.points || 0;
+      const points = user?.points ?? 0;
+
       return {
         id: userId,
         name: points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin',
         level: Math.floor(points / 100) + 1,
         hunger: Math.max(0, 100 - (points % 100)),
-        multiplier: 1 + (points / 1000),
-        evolutionStage: points > 500 ? 'Adult' : 'Baby'
+        multiplier: 1 + points / 1000,
+        evolutionStage: points > 500 ? 'Adult' : 'Baby',
       };
-    }
+    },
   },
-  
+
   Mutation: {
-    // ✅ CREATE USER
     createUser: async (_: any, { name, email, password }: any) => {
+      const trimmedName = name.trim();
+
+      if (trimmedName.length < 2) {
+        throw new GraphQLError('Name must be at least 2 characters', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (!email.includes('@')) {
+        throw new GraphQLError('Invalid email address', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (password.length < 6) {
+        throw new GraphQLError('Password must be at least 6 characters', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      const existing = await User.findOne({ email });
+      if (existing) {
+        throw new GraphQLError('Email already in use', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
       const hashedPassword = await hashPassword(password);
-      const user = new User({ 
-        name, 
-        email, 
+      const user = new User({
+        name: trimmedName,
+        email,
         password: hashedPassword,
         level: 1,
         points: 0,
-        isActive: true
+        isActive: true,
       });
+
       await user.save();
       return user;
     },
 
-    // ✅ LOGIN
     login: async (_: any, { email, password }: any) => {
-      const user = await User.findOne({ email });
-      if (!user || !await comparePassword(password, user.password)) {
-        throw new Error('Неверный email/пароль');
+      if (!email || !password) {
+        throw new GraphQLError('Email and password are required', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
       }
-      return createToken(user._id.toString());
+
+      const user = await User.findOne({ email });
+      const isValid = user && (await comparePassword(password, user.password));
+
+      if (!isValid) {
+        throw new GraphQLError('Invalid email or password', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      return createToken(user!._id.toString());
     },
 
-    // ✅ CREATE QUEST
-    createQuest: async (_: any, { title, description, subject, difficulty, reward }: any, { userId }: any) => {
-      if (!userId) throw new Error('Авторизуйся!');
-      const quest = new Quest({ 
-        title, 
-        description, 
-        subject, 
-        difficulty, 
-        reward, 
-        creator: userId 
+    createQuest: async (
+      _: any,
+      { title, description, subject, difficulty, reward }: any,
+      { userId }: any,
+    ) => {
+      if (!userId) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      const trimmedTitle = title.trim();
+      const trimmedDescription = description.trim();
+
+      if (trimmedTitle.length < 3 || trimmedTitle.length > 100) {
+        throw new GraphQLError('Title must be 3–100 characters', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (trimmedDescription.length < 5) {
+        throw new GraphQLError('Description is too short', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (difficulty < 1 || difficulty > 5) {
+        throw new GraphQLError('Difficulty must be between 1 and 5', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (reward < 10) {
+        throw new GraphQLError('Reward must be at least 10 points', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      const quest = new Quest({
+        title: trimmedTitle,
+        description: trimmedDescription,
+        subject,
+        difficulty,
+        reward,
+        creator: userId,
       });
+
       await quest.save();
-      
-      // ✅ Связь с пользователем
       await User.findByIdAndUpdate(userId, { $push: { quests: quest._id } });
+
       return quest;
     },
 
-    // ✅ CREATE SUBMISSION (ФИКС questId!)
-    createSubmission: async (_: any, { content, questId }: any, { userId }: any) => {
-      if (!userId) throw new Error('Авторизуйся!');
-      
-      const submission = new Submission({ 
-        content, 
-        quest: questId,  // ✅ quest: questId!
-        author: userId, 
-        grade: 0 
-      });
-      await submission.save();
-      
-      // ✅ POINTS SYSTEM!
-      const quest = await Quest.findById(questId);
-      if (quest) {
-        await User.findByIdAndUpdate(userId, { 
-          $inc: { points: quest.reward }
+    createSubmission: async (
+  _: any,
+  { content, questId, fileUrl }: any,
+  { userId }: any,
+) => {
+  if (!userId) {
+    throw new GraphQLError('Not authenticated', {
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+  }
+
+  const trimmedContent = content.trim();
+  if (trimmedContent.length < 1) {
+    throw new GraphQLError('Content cannot be empty', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
+
+  const quest = await Quest.findById(questId);
+  if (!quest) {
+    throw new GraphQLError('Quest not found', {
+      extensions: { code: 'NOT_FOUND' },
+    });
+  }
+
+  const submission = new Submission({
+    content: trimmedContent,
+    quest: questId,
+    author: userId,
+    fileUrl: fileUrl ?? '',
+    grade: 0,
+  });
+
+  await submission.save();
+
+  await User.findByIdAndUpdate(userId, {
+    $inc: { points: quest.reward },
+  });
+
+  await Quest.findByIdAndUpdate(questId, {
+    $push: { submissions: submission._id },
+  });
+
+  // ✅ НОВОЕ: populate для subscription
+  const submissionPopulated = await Submission.findById(submission._id)
+    .populate('author', 'id name')
+    .populate('quest', 'id title');
+
+  pubsub.publish('NEW_SUBMISSION', { newSubmission: submissionPopulated });
+
+  return submission;
+},
+
+
+    gradeSubmission: async (
+      _: any,
+      { submissionId, grade, feedback }: any,
+      { userId }: any,
+    ) => {
+      if (!userId) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
         });
       }
-      
-      // ✅ REAL-TIME NOTIFICATION
-      pubsub.publish('NEW_SUBMISSION', { newSubmission: submission });
-      
-      // ✅ Связь с квестом
-      await Quest.findByIdAndUpdate(questId, { 
-        $push: { submissions: submission._id } 
-      });
-      
-      return submission;
-    },
 
-    // ✅ GRADE SUBMISSION
-    gradeSubmission: async (_: any, { submissionId, grade, feedback }: any, { userId }: any) => {
-      if (!userId) throw new Error('Авторизуйся!');
-      
+      if (grade < 0 || grade > 100) {
+        throw new GraphQLError('Grade must be between 0 and 100', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
       const submission = await Submission.findByIdAndUpdate(
-        submissionId, 
-        { grade, feedback }, 
-        { new: true }
+        submissionId,
+        { grade, feedback },
+        { new: true },
       ).populate('author quest');
-      
-      if (!submission) throw new Error('Submission not found');
-      
-      if (submission.author) {
-        await User.findByIdAndUpdate(submission.author._id, { 
-          $inc: { points: grade * 10 } 
+
+      if (!submission) {
+        throw new GraphQLError('Submission not found', {
+          extensions: { code: 'NOT_FOUND' },
         });
       }
-      
+
+      if (submission.author) {
+        await User.findByIdAndUpdate(submission.author._id, {
+          $inc: { points: grade * 10 },
+        });
+      }
+
       return submission;
     },
 
-    // ✅ UPDATE QUEST (6-я мутация!)
-    updateQuest: async (_: any, { id, title, description }: any, { userId }: any) => {
-      if (!userId) throw new Error('Авторизуйся!');
+    updateQuest: async (
+      _: any,
+      { id, title, description }: any,
+      { userId }: any,
+    ) => {
+      if (!userId) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      const trimmedTitle = title.trim();
+      const trimmedDescription = description.trim();
+
+      if (trimmedTitle.length < 3 || trimmedTitle.length > 100) {
+        throw new GraphQLError('Title must be 3–100 characters', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      if (trimmedDescription.length < 5) {
+        throw new GraphQLError('Description is too short', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
       const quest = await Quest.findOneAndUpdate(
         { _id: id, creator: userId },
-        { title, description },
-        { new: true }
+        { title: trimmedTitle, description: trimmedDescription },
+        { new: true },
       ).populate('creator submissions');
-      
-      if (!quest) throw new Error('Quest not found');
+
+      if (!quest) {
+        throw new GraphQLError('Quest not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
       return quest;
     },
 
-    // ✅ DELETE SUBMISSION (7-я мутация!)
     deleteSubmission: async (_: any, { id }: any, { userId }: any) => {
-      if (!userId) throw new Error('Авторизуйся!');
-      const result = await Submission.findOneAndDelete({ _id: id, author: userId });
-      if (!result) throw new Error('Submission not found');
-      return { success: true };
-    }
+      if (!userId) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
+
+      const result = await Submission.findOneAndDelete({
+        _id: id,
+        author: userId,
+      });
+
+      if (!result) {
+        throw new GraphQLError('Submission not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      return true;
+    },
   },
 
-  // ✅ SUBSCRIPTIONS (REAL-TIME!)
   Subscription: {
-    newSubmission: {
-      subscribe: () => pubsub.asyncIterator(['NEW_SUBMISSION'])
-    }
-  }
+  newSubmission: {
+    subscribe: () => pubsub.asyncIterableIterator('NEW_SUBMISSION'),
+  },
+},
 };

@@ -1,54 +1,105 @@
-import dotenv from 'dotenv';
-dotenv.config();
+import 'dotenv/config';
+import express from 'express';
+import http from 'http';
+import cors from 'cors';
 
 import { ApolloServer } from '@apollo/server';
-import { startStandaloneServer } from '@apollo/server/standalone';
+import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHttpServer';
+import { expressMiddleware } from '@as-integrations/express5';
+
+import { WebSocketServer } from 'ws';
+import { useServer } from 'graphql-ws/lib/use/ws';
+import { makeExecutableSchema } from '@graphql-tools/schema';
+
 import mongoose from 'mongoose';
-import { typeDefs } from './schema/index';
-import { resolvers } from './resolvers/index';
+import { pubsub } from './pubsub';  // ← ИЗМЕНЕНО
+import { typeDefs } from './schema';
+import { resolvers } from './resolvers';
 import { verifyToken } from './utils/auth';
 
-async function startServer() {
-  try {
-    await mongoose.connect(process.env.MONGO_URI!);
-    console.log('✅ MongoDB подключён');
-  } catch (error) {
-    console.error('❌ MongoDB ошибка:', error);
-    process.exit(1);
-  }
+const PORT = Number(process.env.PORT) || 4000;
 
-  const server = new ApolloServer({ 
-    typeDefs, 
-    resolvers 
+async function bootstrap() {
+  await mongoose.connect(process.env.MONGO_URI!);
+  console.log('✅ MongoDB подключён');
+
+  const app = express();
+  const httpServer = http.createServer(app);
+
+  const schema = makeExecutableSchema({ typeDefs, resolvers });
+
+  const wsServer = new WebSocketServer({
+    server: httpServer,
+    path: '/graphql',
   });
 
-  const { url } = await startStandaloneServer(server, {
-    listen: { port: 4000 },
-    context: async ({ req }) => {
-      const token = req.headers.authorization || '';
-      console.log('🔍 HEADERS:', req.headers.authorization?.slice(0, 30) + '...');
-      
-      if (token) {
-        try {
-          const decoded = verifyToken(token);
-          console.log('✅ JWT OK:', decoded.userId);
-          return { userId: decoded.userId };
-        } catch (error: any) {
-          console.log('🔄 JWT FAIL → BYPASS');
+  const serverCleanup = useServer(
+    {
+      schema,
+      context: async (ctx: any) => {
+        const authHeader = ctx.connectionParams?.authorization as string | undefined;
+        if (authHeader) {
+          try {
+            const decoded = verifyToken(authHeader);
+            return { userId: decoded.userId, pubsub };
+          } catch {
+            console.log('⚠️ WS JWT invalid, using bypass user');
+          }
         }
-      }
-      
-      // ✅ BYPASS — ВСЕГДА РАБОТАЕТ!
-      console.log('🔄 BYPASS → 693ed07fe804da5c9df1a00a');
-      return { userId: '693ed07fe804da5c9df1a00a' };
-    }
+        return { userId: '693ed07fe804da5c9df1a00a', pubsub };
+      },
+    },
+    wsServer,
+  );
+
+  const apolloServer = new ApolloServer({
+    schema,
+    plugins: [
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await serverCleanup.dispose();
+            },
+          };
+        },
+      },
+    ],
   });
 
-  console.log(`🚀 GraphQL: ${url}`);
-  console.log('🎮 QuestBeast PRO Backend готов!');
+  await apolloServer.start();
+
+  app.use(
+    '/graphql',
+    cors(),
+    express.json(),
+    expressMiddleware(apolloServer, {
+      context: async ({ req }) => {
+        const authHeader = req.headers.authorization;
+        if (authHeader) {
+          try {
+            const decoded = verifyToken(authHeader);
+            console.log('✅ HTTP JWT OK:', decoded.userId);
+            return { userId: decoded.userId, pubsub };
+          } catch {
+            console.log('⚠️ HTTP JWT invalid, using bypass user');
+          }
+        }
+        return { userId: '693ed07fe804da5c9df1a00a', pubsub };
+      },
+    }),
+  );
+
+  await new Promise<void>((resolve) => {
+    httpServer.listen({ port: PORT }, resolve);
+  });
+
+  console.log(`🚀 HTTP ready at http://localhost:${PORT}/graphql`);
+  console.log(`🔌 WS ready at  ws://localhost:${PORT}/graphql`);
 }
 
-startServer().catch((error) => {
-  console.error('❌ Server crash:', error);
+bootstrap().catch((err) => {
+  console.error('Fatal error:', err);
   process.exit(1);
 });

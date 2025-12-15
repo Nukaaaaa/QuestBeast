@@ -7,7 +7,8 @@ const questSchema = new mongoose.Schema({
   difficulty: { type: Number, min: 1, max: 5, default: 1 },
   reward: { type: Number, min: 10, default: 50 },
   creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  submissions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Submission' }] 
+  submissions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Submission' }],
+  isDeleted: { type: Boolean, default: false }
 }, { timestamps: true });
 
 export default mongoose.model('Quest', questSchema);

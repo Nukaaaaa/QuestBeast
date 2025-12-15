@@ -6,7 +6,8 @@ const submissionSchema = new mongoose.Schema({
   grade: { type: Number, min: 0, max: 100, default: 0 },
   feedback: { type: String, default: '' },
   quest: { type: mongoose.Schema.Types.ObjectId, ref: 'Quest', required: true },
-  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
+  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  isArchived: { type: Boolean, default: false }
 }, { timestamps: true });
 
 export default mongoose.model('Submission', submissionSchema);
