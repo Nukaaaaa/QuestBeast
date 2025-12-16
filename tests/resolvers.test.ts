@@ -2,11 +2,15 @@ import { resolvers } from '@/resolvers';
 import User from '@/models/User';
 import Quest from '@/models/Quest';
 import Submission from '@/models/Submission';
+import Monster from '@/models/Monster';
+import Leaderboard from '@/models/LeadBoard';
 import { hashPassword, comparePassword, createToken } from '@/utils/auth';
 
 jest.mock('@/models/User');
 jest.mock('@/models/Quest');
 jest.mock('@/models/Submission');
+jest.mock('@/models/Monster');
+jest.mock('@/models/LeadBoard');
 jest.mock('@/utils/auth');
 jest.mock('@/pubsub');
 
@@ -54,23 +58,27 @@ describe('Resolvers Unit Tests', () => {
   });
 
   // Test 4
-  it('monster - возвращает Goblin для малых очков', async () => {
-    (User.findById as jest.Mock).mockResolvedValue({ points: 50 });
+  it('monster - возвращает монстра из БД', async () => {
+    const mockMonster = { _id: 'm1', name: 'TestBeast', level: 5 };
+    (Monster.findOne as jest.Mock).mockReturnValue({
+      lean: jest.fn().mockResolvedValue(mockMonster)
+    });
 
     const result = await resolvers.Query.monster(null, { userId: '1' });
     
-    expect(result.name).toBe('Goblin');
-    expect(result.level).toBe(1);
+    expect(Monster.findOne).toHaveBeenCalledWith({ user: '1' });
+    expect(result.name).toBe('TestBeast');
+    expect(result.level).toBe(5);
   });
 
   // Test 5
-  it('monster - возвращает Dragon для больших очков', async () => {
-    (User.findById as jest.Mock).mockResolvedValue({ points: 1500 });
+  it('monster - выбрасывает ошибку если монстр не найден', async () => {
+    (Monster.findOne as jest.Mock).mockReturnValue({
+      lean: jest.fn().mockResolvedValue(null)
+    });
 
-    const result = await resolvers.Query.monster(null, { userId: '1' });
-    
-    expect(result.name).toBe('Dragon');
-    expect(result.evolutionStage).toBe('Adult');
+    await expect(resolvers.Query.monster(null, { userId: '1' }))
+      .rejects.toThrow('Monster not found for this user');
   });
 
   // Test 6

@@ -2,10 +2,10 @@ import { GraphQLError } from 'graphql';
 import User from '../models/User';
 import Quest from '../models/Quest';
 import Submission from '../models/Submission';
+import Monster from '../models/Monster';
+import Leaderboard from '../models/LeadBoard';
 import { hashPassword, comparePassword, createToken } from '../utils/auth';
 import { pubsub } from '../pubsub'; 
-
-
 
 const toGraphQLId = (doc: any) => {
   if (!doc || !doc._id) return doc;
@@ -25,15 +25,31 @@ const toGraphQLId = (doc: any) => {
   return obj;
 };
 
+const updateUserStats = async (userId: string, pointsToAdd: number) => {
+  const user = await User.findByIdAndUpdate(userId, { $inc: { points: pointsToAdd } }, { new: true });
+  if (!user) return;
+
+  const monster = await Monster.findOne({ user: userId });
+  if (monster) {
+    const points = user.points;
+    monster.level = Math.floor(points / 100) + 1;
+    monster.hunger = Math.max(0, 100 - (points % 100));
+    monster.multiplier = 1 + points / 1000;
+    monster.evolutionStage = points > 500 ? 'adult' : 'baby';
+    monster.name = points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin';
+    await monster.save();
+  }
+
+  await Leaderboard.findOneAndUpdate({ user: userId }, { score: user.points });
+};
+
 export const resolvers = {
   Query: {
-    // ✅ ФИКС users
     users: async () => {
       const users = await User.find().populate('quests').lean();
       return users.map(user => ({ id: user._id.toString(), ...user }));
     },
 
-    // ✅ ФИКС user
     user: async (_: any, { id }: { id: string }) => {
       const userDoc = await User.findById(id).populate('quests').lean();
       if (!userDoc) {
@@ -42,14 +58,12 @@ export const resolvers = {
       return { id: userDoc._id.toString(), ...userDoc };
     },
 
-    // ✅ ФИКС quests
     quests: async (_: any, { subject }: { subject?: string }) => {
       const quests = await (subject ? Quest.find({ subject }) : Quest.find())
         .populate('creator submissions').lean();
       return quests.map(toGraphQLId);
     },
 
-    // ✅ ФИКС quest
     quest: async (_: any, { id }: { id: string }) => {
       const questDoc = await Quest.findById(id).populate('creator submissions').lean();
       if (!questDoc) {
@@ -58,34 +72,33 @@ export const resolvers = {
       return toGraphQLId(questDoc);
     },
 
-    // ✅ ФИКС submissions
     submissions: async (_: any, { questId }: { questId: string }) => {
       const subs = await Submission.find({ quest: questId }).populate('author quest').lean();
       return subs.map(s => ({ id: s._id.toString(), ...s }));
     },
 
     leaderboard: async () => {
-      const users = await User.find().sort({ points: -1 }).limit(10).lean();
-      return users.map((user, index) => ({
-        id: user._id.toString(),
-        user: { id: user._id.toString(), ...user },
-        score: user.points,
+      const leaderboardData = await Leaderboard.find()
+        .sort({ score: -1 })
+        .limit(10)
+        .populate('user')
+        .lean();
+      
+      return leaderboardData.map((entry, index) => ({
+        id: entry._id.toString(),
+        user: entry.user ? { id: (entry.user as any)._id.toString(), ...(entry.user as any) } : null,
+        score: entry.score,
         rank: index + 1,
-        period: 'week',
+        period: 'all', 
       }));
     },
 
     monster: async (_: any, { userId }: { userId: string }) => {
-      const user = await User.findById(userId);
-      const points = user?.points ?? 0;
-      return {
-        id: userId,
-        name: points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin',
-        level: Math.floor(points / 100) + 1,
-        hunger: Math.max(0, 100 - (points % 100)),
-        multiplier: 1 + points / 1000,
-        evolutionStage: points > 500 ? 'Adult' : 'Baby',
-      };
+      const monsterDoc = await Monster.findOne({ user: userId }).lean();
+      if (!monsterDoc) {
+        throw new GraphQLError('Monster not found for this user', { extensions: { code: 'NOT_FOUND' } });
+      }
+      return toGraphQLId(monsterDoc);
     },
 
     me: async (_: any, __: any, { userId }: { userId?: string }) => {
@@ -115,6 +128,13 @@ export const resolvers = {
         name: trimmedName, email, password: hashedPassword, level: 1, points: 0, isActive: true,
       });
       await user.save();
+      
+      const monster = new Monster({ user: user._id });
+      await monster.save();
+
+      const leaderboardEntry = new Leaderboard({ user: user._id, score: 0 });
+      await leaderboardEntry.save();
+
       return { id: user._id.toString(), ...user.toObject() };
     },
 
@@ -142,7 +162,6 @@ export const resolvers = {
       return toGraphQLId(questDoc);
     },
 
-    // ✅ ФИКС createSubmission
     createSubmission: async (_: any, { content, questId, fileUrl }: any, { userId }: any) => {
       if (!userId) throw new GraphQLError('Not authenticated', { extensions: { code: 'UNAUTHENTICATED' } });
       const trimmedContent = content.trim();
@@ -153,10 +172,9 @@ export const resolvers = {
 
       const submission = new Submission({ content: trimmedContent, quest: questId, author: userId, fileUrl: fileUrl ?? '', grade: 0 });
       await submission.save();
-      await User.findByIdAndUpdate(userId, { $inc: { points: quest.reward } });
+      await updateUserStats(userId, quest.reward);
       await Quest.findByIdAndUpdate(questId, { $push: { submissions: submission._id } });
 
-      // ✅ SAFE данные
       const populated: any = await Submission.findById(submission._id).populate('author', 'id name').populate('quest', 'id title').lean();
       const safeSubmission: any = {
         id: populated._id.toString(),
@@ -172,7 +190,6 @@ export const resolvers = {
       return safeSubmission;
     },
 
-    // ✅ ФИКС gradeSubmission
     gradeSubmission: async (_: any, { submissionId, grade, feedback }: any, { userId }: any) => {
       if (!userId) throw new GraphQLError('Not authenticated', { extensions: { code: 'UNAUTHENTICATED' } });
       if (grade < 0 || grade > 100) throw new GraphQLError('Grade must be between 0 and 100', { extensions: { code: 'BAD_USER_INPUT' } });
@@ -186,10 +203,9 @@ export const resolvers = {
 
       const populated: any = await Submission.findById(submissionId).populate('author', 'id name').populate('quest', 'id title').lean();
       if (populated.author) {
-        await User.findByIdAndUpdate(populated.author._id, { $inc: { points: grade * 10 } });
+        await updateUserStats(populated.author._id.toString(), grade * 10);
       }
 
-      
       pubsub.publish('LEADERBOARD_UPDATE', { leaderboardUpdated: true });
 
       return {
@@ -238,15 +254,8 @@ export const resolvers = {
 
   User: {
     monster: async (user: any) => {
-      const points = user.points ?? 0;
-      return {
-        id: user.id || user._id?.toString(),
-        name: points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin',
-        level: Math.floor(points / 100) + 1,
-        hunger: Math.max(0, 100 - (points % 100)),
-        multiplier: 1 + points / 1000,
-        evolutionStage: points > 500 ? 'Adult' : 'Baby',
-      };
+      const monsterDoc = await Monster.findOne({ user: user._id }).lean();
+      return monsterDoc ? toGraphQLId(monsterDoc) : null;
     },
   },
 };

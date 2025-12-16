@@ -75,6 +75,6 @@ describe('Integration Test', () => {
     const monster = await resolvers.Query.monster(null, { userId: user.id });
     expect(monster.name).toBe('Orc'); 
     expect(monster.level).toBe(10); 
-    expect(monster.evolutionStage).toBe('Adult');
+    expect(monster.evolutionStage).toBe('adult');
   });
 });
