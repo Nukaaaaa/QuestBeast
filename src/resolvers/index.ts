@@ -123,6 +123,7 @@ export const resolvers = {
       const user = await User.findOne({ email });
       const isValid = user && await comparePassword(password, user.password);
       if (!isValid) throw new GraphQLError('Invalid email or password', { extensions: { code: 'BAD_USER_INPUT' } });
+      pubsub.publish('LEADERBOARD_UPDATE', { leaderboardUpdated: true });
       return createToken(user!._id.toString());
     },
 
@@ -166,7 +167,8 @@ export const resolvers = {
         author: populated.author ? { id: populated.author._id.toString(), name: populated.author.name } : null
       };
 
-      pubsub.publish('NEW_SUBMISSION', { newSubmission: safeSubmission });
+      pubsub.publish(`NEW_SUBMISSION_${questId}`, { newSubmission: safeSubmission });
+      pubsub.publish('LEADERBOARD_UPDATE', { leaderboardUpdated: true });
       return safeSubmission;
     },
 
@@ -186,6 +188,9 @@ export const resolvers = {
       if (populated.author) {
         await User.findByIdAndUpdate(populated.author._id, { $inc: { points: grade * 10 } });
       }
+
+      
+      pubsub.publish('LEADERBOARD_UPDATE', { leaderboardUpdated: true });
 
       return {
         id: populated._id.toString(),
@@ -217,11 +222,19 @@ export const resolvers = {
   },
 
   Subscription: {
-    newSubmission: {
-      subscribe: () => pubsub.asyncIterableIterator('NEW_SUBMISSION'),
-      resolve: (payload: any) => payload.newSubmission,
+  newSubmission: {
+    subscribe: (parent: any, { questId }: any) => {
+      return pubsub.asyncIterableIterator(`NEW_SUBMISSION_${questId}`);
     },
+    resolve: (payload: any) => payload.newSubmission,
   },
+  leaderboardUpdated: {
+    // @ts-ignore
+    subscribe: () => pubsub.asyncIterableIterator('LEADERBOARD_UPDATE'),
+    resolve: () => true, // триггер для refetch
+  },
+},
+
 
   User: {
     monster: async (user: any) => {

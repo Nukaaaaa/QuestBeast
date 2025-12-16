@@ -74,6 +74,8 @@ export const typeDefs = `#graphql
   }
 
   type Subscription {
-    newSubmission: Submission!
-  }
+  newSubmission(questId: ID!): Submission! 
+  leaderboardUpdated: Boolean!
+}
+
 ` as const;
