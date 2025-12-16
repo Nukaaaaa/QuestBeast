@@ -1,60 +1,95 @@
 import { GraphQLError } from 'graphql';
+import { ObjectId } from 'mongoose';
 import User from '../models/User';
 import Quest from '../models/Quest';
 import Submission from '../models/Submission';
 import { hashPassword, comparePassword, createToken } from '../utils/auth';
 import { pubsub } from '../pubsub'; 
 
+// 🔥 Helper для конвертации ObjectId в string
+const convertToGraphQL = (doc: any): any => {
+  if (!doc) return doc;
+  
+  const obj = doc.toObject ? doc.toObject() : { ...doc };
+  obj.id = obj._id.toString();
+  delete obj._id;
+  delete obj.__v;
+  
+  if (obj.creator) {
+    obj.creator.id = obj.creator._id.toString();
+    delete obj.creator._id;
+  }
+  
+  if (obj.author) {
+    obj.author.id = obj.author._id.toString();
+    delete obj.author._id;
+  }
+  
+  if (obj.quest) {
+    obj.quest.id = obj.quest._id.toString();
+    delete obj.quest._id;
+  }
+  
+  if (Array.isArray(obj.submissions)) {
+    obj.submissions = obj.submissions.map(convertToGraphQL);
+  }
+  
+  if (Array.isArray(obj.quests)) {
+    obj.quests = obj.quests.map(convertToGraphQL);
+  }
+  
+  return obj;
+};
+
 export const resolvers = {
   Query: {
     users: async () => {
-      return User.find().populate('quests');
+      const users = await User.find().populate('quests');
+      return users.map(convertToGraphQL);
     },
 
-    user: async (_: any, { id }: any) => {
+    user: async (_: any, { id }: { id: string }) => {
       const userDoc = await User.findById(id).populate('quests');
       if (!userDoc) {
         throw new GraphQLError('User not found', {
           extensions: { code: 'NOT_FOUND' },
         });
       }
-      return userDoc;
+      return convertToGraphQL(userDoc);
     },
 
-    quests: async (_: any, { subject }: any) => {
+    quests: async (_: any, { subject }: { subject?: string }) => {
       if (subject) {
-        return Quest.find({ subject }).populate('creator submissions');
+        const quests = await Quest.find({ subject }).populate('creator submissions');
+        return quests.map(convertToGraphQL);
       }
-      return Quest.find().populate('creator submissions');
+      const quests = await Quest.find().populate('creator submissions');
+      return quests.map(convertToGraphQL);
     },
 
-    quest: async (_: any, { id }: any) => {
+    quest: async (_: any, { id }: { id: string }) => {
       const questDoc = await Quest.findById(id).populate('creator submissions');
-      if (!questDoc) {
-        throw new GraphQLError('Quest not found', {
-          extensions: { code: 'NOT_FOUND' },
-        });
-      }
-      return questDoc;
+      if (!questDoc) throw new GraphQLError('Quest not found');
+      return convertToGraphQL(questDoc);
     },
 
-    submissions: async (_: any, { questId }: any) => {
-      return Submission.find({ quest: questId }).populate('author quest');
+    submissions: async (_: any, { questId }: { questId: string }) => {
+      const submissions = await Submission.find({ quest: questId }).populate('author quest');
+      return submissions.map(convertToGraphQL);
     },
 
     leaderboard: async () => {
       const users = await User.find().sort({ points: -1 }).limit(10);
       return users.map((user, index) => ({
         id: user._id.toString(),
-        user,
+        user: convertToGraphQL(user),
         score: user.points,
         rank: index + 1,
         period: 'week',
       }));
     },
-    
 
-    monster: async (_: any, { userId }: any) => {
+    monster: async (_: any, { userId }: { userId: string }) => {
       const user = await User.findById(userId);
       const points = user?.points ?? 0;
 
@@ -67,23 +102,25 @@ export const resolvers = {
         evolutionStage: points > 500 ? 'Adult' : 'Baby',
       };
     },
-    me: async (_: any, __: any, { userId }: any) => {
+    
+    me: async (_: any, __: any, { userId }: { userId: string }) => {
       if (!userId) {
-      throw new GraphQLError('Not authenticated', {
-        extensions: { code: 'UNAUTHENTICATED' },
-      });
-    }
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
       const userDoc = await User.findById(userId).populate('quests');
       if (!userDoc) {
         throw new GraphQLError('User not found', {
           extensions: { code: 'NOT_FOUND' },
         });
       }
-        return userDoc;
+      return convertToGraphQL(userDoc);
+    },
   },
-  },
+  
   Mutation: {
-    createUser: async (_: any, { name, email, password }: any) => {
+    createUser: async (_: any, { name, email, password }: { name: string, email: string, password: string }) => {
       const trimmedName = name.trim();
 
       if (trimmedName.length < 2) {
@@ -103,6 +140,7 @@ export const resolvers = {
           extensions: { code: 'BAD_USER_INPUT' },
         });
       }
+      
       const existing = await User.findOne({ email });
       if (existing) {
         throw new GraphQLError('Email already in use', {
@@ -121,10 +159,10 @@ export const resolvers = {
       });
 
       await user.save();
-      return user;
+      return convertToGraphQL(user);
     },
 
-    login: async (_: any, { email, password }: any) => {
+    login: async (_: any, { email, password }: { email: string, password: string }) => {
       if (!email || !password) {
         throw new GraphQLError('Email and password are required', {
           extensions: { code: 'BAD_USER_INPUT' },
@@ -145,8 +183,11 @@ export const resolvers = {
 
     createQuest: async (
       _: any,
-      { title, description, subject, difficulty, reward }: any,
-      { userId }: any,
+      { title, description, subject, difficulty, reward }: { 
+        title: string, description: string, subject: string, 
+        difficulty: number, reward: number 
+      },
+      { userId }: { userId: string },
     ) => {
       if (!userId) {
         throw new GraphQLError('Not authenticated', {
@@ -193,67 +234,65 @@ export const resolvers = {
       await quest.save();
       await User.findByIdAndUpdate(userId, { $push: { quests: quest._id } });
 
-      return quest;
+      return convertToGraphQL(quest);
     },
 
     createSubmission: async (
-  _: any,
-  { content, questId, fileUrl }: any,
-  { userId }: any,
-) => {
-  if (!userId) {
-    throw new GraphQLError('Not authenticated', {
-      extensions: { code: 'UNAUTHENTICATED' },
-    });
-  }
+      _: any,
+      { content, questId, fileUrl }: { content: string, questId: string, fileUrl?: string },
+      { userId }: { userId: string },
+    ) => {
+      if (!userId) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHENTICATED' },
+        });
+      }
 
-  const trimmedContent = content.trim();
-  if (trimmedContent.length < 1) {
-    throw new GraphQLError('Content cannot be empty', {
-      extensions: { code: 'BAD_USER_INPUT' },
-    });
-  }
+      const trimmedContent = content.trim();
+      if (trimmedContent.length < 1) {
+        throw new GraphQLError('Content cannot be empty', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
 
-  const quest = await Quest.findById(questId);
-  if (!quest) {
-    throw new GraphQLError('Quest not found', {
-      extensions: { code: 'NOT_FOUND' },
-    });
-  }
+      const quest = await Quest.findById(questId);
+      if (!quest) {
+        throw new GraphQLError('Quest not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
 
-  const submission = new Submission({
-    content: trimmedContent,
-    quest: questId,
-    author: userId,
-    fileUrl: fileUrl ?? '',
-    grade: 0,
-  });
+      const submission = new Submission({
+        content: trimmedContent,
+        quest: questId,
+        author: userId,
+        fileUrl: fileUrl ?? '',
+        grade: 0,
+      });
 
-  await submission.save();
+      await submission.save();
 
-  await User.findByIdAndUpdate(userId, {
-    $inc: { points: quest.reward },
-  });
+      await User.findByIdAndUpdate(userId, {
+        $inc: { points: quest.reward },
+      });
 
-  await Quest.findByIdAndUpdate(questId, {
-    $push: { submissions: submission._id },
-  });
+      await Quest.findByIdAndUpdate(questId, {
+        $push: { submissions: submission._id },
+      });
 
-  // ✅ НОВОЕ: populate для subscription
-  const submissionPopulated = await Submission.findById(submission._id)
-    .populate('author', 'id name')
-    .populate('quest', 'id title');
+      const submissionPopulated = await Submission.findById(submission._id)
+        .populate('author', 'name')
+        .populate('quest', 'title');
+      
+      pubsub.publish('NEW_SUBMISSION', { newSubmission: convertToGraphQL(submissionPopulated) });
 
-  pubsub.publish('NEW_SUBMISSION', { newSubmission: submissionPopulated });
-
-  return submission;
-},
-
+      return convertToGraphQL(submission);
+    },
 
     gradeSubmission: async (
       _: any,
-      { submissionId, grade, feedback }: any,
-      { userId }: any,
+      { submissionId, grade, feedback }: { submissionId: string, grade: number, feedback?: string },
+      { userId }: { userId: string },
     ) => {
       if (!userId) {
         throw new GraphQLError('Not authenticated', {
@@ -280,18 +319,18 @@ export const resolvers = {
       }
 
       if (submission.author) {
-        await User.findByIdAndUpdate(submission.author._id, {
+        await User.findByIdAndUpdate((submission.author as any)._id, {
           $inc: { points: grade * 10 },
         });
       }
 
-      return submission;
+      return convertToGraphQL(submission);
     },
 
     updateQuest: async (
       _: any,
-      { id, title, description }: any,
-      { userId }: any,
+      { id, title, description }: { id: string, title: string, description: string },
+      { userId }: { userId: string },
     ) => {
       if (!userId) {
         throw new GraphQLError('Not authenticated', {
@@ -326,10 +365,10 @@ export const resolvers = {
         });
       }
 
-      return quest;
+      return convertToGraphQL(quest);
     },
 
-    deleteSubmission: async (_: any, { id }: any, { userId }: any) => {
+    deleteSubmission: async (_: any, { id }: { id: string }, { userId }: { userId: string }) => {
       if (!userId) {
         throw new GraphQLError('Not authenticated', {
           extensions: { code: 'UNAUTHENTICATED' },
@@ -352,15 +391,16 @@ export const resolvers = {
   },
 
   Subscription: {
-  newSubmission: {
-    subscribe: () => pubsub.asyncIterableIterator('NEW_SUBMISSION'),
+    newSubmission: {
+      subscribe: () => pubsub.asyncIterableIterator('NEW_SUBMISSION'),
+    },
   },
-},
+  
   User: {
     monster: async (user: any) => {
       const points = user.points ?? 0;
       return {
-        id: user._id.toString(),
+        id: user.id || user._id?.toString(),
         name: points > 1000 ? 'Dragon' : points > 100 ? 'Orc' : 'Goblin',
         level: Math.floor(points / 100) + 1,
         hunger: Math.max(0, 100 - (points % 100)),
