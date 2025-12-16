@@ -1,7 +1,7 @@
 export const typeDefs = `#graphql
   type User {
-    id: ID!
-    name: String!
+    id: ID
+    name: String
     email: String!
     avatar: String
     level: Int!
@@ -25,7 +25,7 @@ export const typeDefs = `#graphql
   }
 
   type Submission {
-    id: ID!
+    id: ID
     content: String!
     fileUrl: String
     grade: Int!
