@@ -12,12 +12,29 @@ import { useServer } from 'graphql-ws/lib/use/ws';
 import { makeExecutableSchema } from '@graphql-tools/schema';
 
 import mongoose from 'mongoose';
-import { pubsub } from './pubsub';  // ← ИЗМЕНЕНО
+import { pubsub } from './pubsub';
 import { typeDefs } from './schema';
 import { resolvers } from './resolvers';
 import { verifyToken } from './utils/auth';
 
 const PORT = Number(process.env.PORT) || 4000;
+
+/**
+ * Унифицированный builder контекста
+ * Работает и для HTTP, и для WS
+ */
+const buildContext = (authHeader?: string) => {
+  if (!authHeader) {
+    return { userId: null, pubsub };
+  }
+
+  try {
+    const decoded = verifyToken(authHeader);
+    return { userId: decoded.userId, pubsub };
+  } catch {
+    return { userId: null, pubsub };
+  }
+};
 
 async function bootstrap() {
   await mongoose.connect(process.env.MONGO_URI!);
@@ -26,8 +43,14 @@ async function bootstrap() {
   const app = express();
   const httpServer = http.createServer(app);
 
-  const schema = makeExecutableSchema({ typeDefs, resolvers });
+  const schema = makeExecutableSchema({
+    typeDefs,
+    resolvers,
+  });
 
+  /**
+   * WebSocket (Subscriptions)
+   */
   const wsServer = new WebSocketServer({
     server: httpServer,
     path: '/graphql',
@@ -36,22 +59,20 @@ async function bootstrap() {
   const serverCleanup = useServer(
     {
       schema,
-      context: async (ctx: any) => {
-        const authHeader = ctx.connectionParams?.authorization as string | undefined;
-        if (authHeader) {
-          try {
-            const decoded = verifyToken(authHeader);
-            return { userId: decoded.userId, pubsub };
-          } catch {
-            console.log('⚠️ WS JWT invalid, using bypass user');
-          }
-        }
-        return { userId: '693ed07fe804da5c9df1a00a', pubsub };
+      context: async (ctx) => {
+        const authHeader =
+          (ctx.connectionParams?.authorization as string | undefined) ??
+          (ctx.connectionParams?.Authorization as string | undefined);
+
+        return buildContext(authHeader);
       },
     },
     wsServer,
   );
 
+  /**
+   * Apollo Server
+   */
   const apolloServer = new ApolloServer({
     schema,
     plugins: [
@@ -70,6 +91,9 @@ async function bootstrap() {
 
   await apolloServer.start();
 
+  /**
+   * HTTP (Queries + Mutations)
+   */
   app.use(
     '/graphql',
     cors(),
@@ -77,16 +101,7 @@ async function bootstrap() {
     expressMiddleware(apolloServer, {
       context: async ({ req }) => {
         const authHeader = req.headers.authorization;
-        if (authHeader) {
-          try {
-            const decoded = verifyToken(authHeader);
-            console.log('✅ HTTP JWT OK:', decoded.userId);
-            return { userId: decoded.userId, pubsub };
-          } catch {
-            console.log('⚠️ HTTP JWT invalid, using bypass user');
-          }
-        }
-        return { userId: '693ed07fe804da5c9df1a00a', pubsub };
+        return buildContext(authHeader);
       },
     }),
   );
@@ -96,10 +111,10 @@ async function bootstrap() {
   });
 
   console.log(`🚀 HTTP ready at http://localhost:${PORT}/graphql`);
-  console.log(`🔌 WS ready at  ws://localhost:${PORT}/graphql`);
+  console.log(`🔌 WS ready at ws://localhost:${PORT}/graphql`);
 }
 
 bootstrap().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error('❌ Fatal error:', err);
   process.exit(1);
 });
