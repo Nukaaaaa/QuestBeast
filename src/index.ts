@@ -19,10 +19,7 @@ import { verifyToken } from './utils/auth';
 
 const PORT = Number(process.env.PORT) || 4000;
 
-/**
- * Унифицированный builder контекста
- * Работает и для HTTP, и для WS
- */
+
 const buildContext = (authHeader?: string) => {
   if (!authHeader) {
     return { userId: null, pubsub };
@@ -48,9 +45,7 @@ async function bootstrap() {
     resolvers,
   });
 
-  /**
-   * WebSocket (Subscriptions)
-   */
+  
   const wsServer = new WebSocketServer({
     server: httpServer,
     path: '/graphql',
@@ -70,9 +65,7 @@ async function bootstrap() {
     wsServer,
   );
 
-  /**
-   * Apollo Server
-   */
+
   const apolloServer = new ApolloServer({
     schema,
     plugins: [
@@ -91,9 +84,7 @@ async function bootstrap() {
 
   await apolloServer.start();
 
-  /**
-   * HTTP (Queries + Mutations)
-   */
+ 
   app.use(
     '/graphql',
     cors(),

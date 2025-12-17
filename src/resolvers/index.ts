@@ -12,12 +12,10 @@ const toGraphQLId = (doc: any) => {
   const obj = { ...doc };
   obj.id = obj._id.toString();
   
-  // Populate поля
   if (obj.creator?. _id) obj.creator.id = obj.creator._id.toString();
   if (obj.author?. _id) obj.author.id = obj.author._id.toString();
   if (obj.quest?. _id) obj.quest.id = obj.quest._id.toString();
   
-  // Массивы
   if (obj.submissions) obj.submissions = obj.submissions.map(toGraphQLId);
   if (obj.quests) obj.quests = obj.quests.map(toGraphQLId);
   

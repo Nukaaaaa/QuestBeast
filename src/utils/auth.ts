@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
-const JWT_SECRET = process.env.JWT_SECRET as string;  // ✅ ФИНАЛЬНЫЙ секрет!
+const JWT_SECRET = process.env.JWT_SECRET as string;
 
 export const createToken = (userId: string) => {
   console.log('🔑 CREATE TOKEN → userId:', userId);
